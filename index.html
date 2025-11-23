@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Greener Cities, Cleaner Air</title>
+
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet-easybutton@2.4.0/src/easy-button.css" />
+
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" />
+
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css" />
+
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+    ></script>
+
+    <script src="src/jquery-3.7.1.min.js"></script>
+
+    <script src="https://cdn.jsdelivr.net/npm/leaflet-easybutton@2.4.0/src/easy-button.js"></script>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+
+    <style>
+      #map {
+        height: 100vh;
+        width: 100%;
+      }
+
+      .legend {
+        padding: 6px 8px;
+        font: 14px Arial, Helvetica, sans-serif;
+        background: white;
+        background: rgba(255, 255, 255, 0.9);
+        box-shadow: 0 0 15px rgba(0, 0, 0, 0.2);
+        border-radius: 5px;
+        line-height: 1.8;
+        color: #555;
+      }
+
+      .legend i {
+        width: 18px;
+        height: 18px;
+        float: left;
+        margin-right: 8px;
+        opacity: 0.9;
+      }
+
+      .legend strong {
+        font-size: 1.1em;
+        display: block;
+        margin-bottom: 5px;
+      }
+
+      .active-delete-mode {
+        color: white;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="map"></div>
+
+    <script>
+      var map = L.map("map").setView([38.72, -9.14], 12);
+
+      // Base map
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        attribution: "&copy; OpenStreetMap contributors",
+        maxZoom: 19,
+      }).addTo(map);
+
+      // Global layers
+      var layerGreenSpaces, layerAirPollution;
+      // Control layer
+      var layerControl;
+
+      // Variables for delete mode
+      var deleteMode = false;
+      var deleteButton;
+
+      var isInitialLoad = true;
+
+      // To draw new areas
+      var drawHandler = null;
+
+      // Some style functions
+
+      function styleGreenSpaces(feature) {
+        return {
+          fillColor: "#6aa84f",
+          weight: 2,
+          opacity: 1,
+          color: "green",
+          fillOpacity: 0.5,
+        };
+      }
+
+      function getColorAirPollution(pm2_5) {
+        let val = parseFloat(pm2_5);
+        if (val > 2.8) return "#7E0023";
+        if (val > 2.4) return "#FF0000";
+        if (val > 2) return "#FF7E00";
+        if (val > 1.6) return "#FFFF00";
+        if (val > 1.2) return "#ADFF2F";
+        return "#00E400";
+      }
+
+      // Pollution legend
+      var legend = L.control({ position: "bottomright" });
+
+      legend.onAdd = function (map) {
+        var div = L.DomUtil.create("div", "info legend"),
+          // Pollution ranges
+          grades = [0, 1.2, 1.6, 2, 2.4, 2.8],
+          labels = [];
+
+        div.innerHTML = "<strong>Pollution (pm2.5)</strong>";
+
+        // Generating labels for legend
+        for (var i = 0; i < grades.length; i++) {
+          var from = grades[i];
+          var to = grades[i + 1];
+          var color = getColorAirPollution(from + 0.01);
+
+          div.innerHTML += '<i style="background:' + color + '"></i> ' + from + (to ? "&ndash;" + to : "+");
+          div.innerHTML += "<br>";
+        }
+
+        return div;
+      };
+
+      legend.addTo(map);
+
+      // Function to disactivate the delete mode
+      function toggleDeleteMode(button) {
+        deleteMode = !deleteMode;
+        if (deleteMode) {
+          $(button.getContainer()).addClass("active-delete-mode");
+          map.getContainer().style.cursor = "crosshair";
+          alert("Delete mode is ON. Click a green area to delete it. Click the icon again or press 'Esc' to cancel.");
+        } else {
+          $(button.getContainer()).removeClass("active-delete-mode");
+          map.getContainer().style.cursor = "";
+        }
+      }
+
+      // Loading data function (manages also the visibility of the layers)
+      function loadData() {
+        $.getJSON("https://geo-backend-bg2p.onrender.com/api/get_data.php")
+          .done(function (data) {
+            console.log("Data received:", data);
+
+            // Removing existing layers
+            if (layerGreenSpaces) map.removeLayer(layerGreenSpaces);
+            if (layerAirPollution) map.removeLayer(layerAirPollution);
+
+            // Removing control layer
+            if (layerControl) {
+              layerControl.remove();
+            }
+
+            // Green spaces data
+            layerGreenSpaces = L.geoJSON(data.green_spaces, {
+              style: styleGreenSpaces,
+              onEachFeature: function (feature, layer) {
+                layer.bindPopup("Area: " + (feature.properties.NOME || "N/A"));
+              },
+            });
+
+            // removing green areas
+            layerGreenSpaces.on("click", function (e) {
+              if (deleteMode) {
+                var layer = e.layer;
+                var nome = layer.feature.properties.NOME || "N/A";
+                var uniqueId = layer.feature.properties.id;
+
+                if (!uniqueId) {
+                  alert("Unable to delete: Unique ID ('id') not found in feature properties.");
+                  return;
+                }
+
+                if (confirm("Are you sure you want to delete the area: " + nome + " (ID: " + uniqueId + ")?")) {
+                  // AJAX call to delete the green space
+                  $.post("https://geo-backend-bg2p.onrender.com/api/delete_area.php", { id: uniqueId })
+                    .done(function (response) {
+                      alert("Area eliminated sucessfully!");
+                      loadData();
+                      // Turning off the delete mode
+                      if (deleteMode) {
+                        toggleDeleteMode(deleteButton);
+                      }
+                    })
+                    .fail(function () {
+                      alert("Error deleting area.");
+                    });
+                }
+              }
+            });
+
+            // Pollution data
+            layerAirPollution = L.geoJSON(data.air_pollution, {
+              pointToLayer: function (feature, latlng) {
+                var pm2_5_val = feature.properties.pm2_5;
+                var color = getColorAirPollution(pm2_5_val);
+
+                // Circle marker
+                return L.circleMarker(latlng, {
+                  radius: 10,
+                  fillColor: color,
+                  color: "#333",
+                  weight: 2,
+                  opacity: 1,
+                  fillOpacity: 0.8,
+                });
+              },
+
+              onEachFeature: function (feature, layer) {
+                layer.bindPopup("pm2.5: " + (feature.properties.pm2_5 || "N/A"));
+              },
+            });
+
+            // Adding control layer
+            var overlays = {
+              "Green Spaces": layerGreenSpaces,
+              "Air Pollution": layerAirPollution,
+            };
+            layerControl = L.control.layers(null, overlays).addTo(map);
+
+            layerGreenSpaces.addTo(map);
+            layerAirPollution.addTo(map);
+
+            // Centration only at the first loading
+            if (isInitialLoad) {
+              var bounds = L.latLngBounds([]);
+
+              // only if it has data
+              if (layerGreenSpaces.getLayers().length > 0) {
+                bounds.extend(layerGreenSpaces.getBounds());
+              }
+              if (layerAirPollution.getLayers().length > 0) {
+                bounds.extend(layerAirPollution.getBounds());
+              }
+
+              if (bounds.isValid()) {
+                map.fitBounds(bounds);
+              }
+
+              isInitialLoad = false;
+            }
+          })
+          .fail(function () {
+            console.log("Error loading data!");
+          });
+      }
+
+      loadData();
+      // Update data every minute
+      setInterval(loadData, 60000);
+
+      // Full Extent Button
+      L.easyButton("fa-solid fa-arrows-up-down-left-right", function () {
+        var bounds = L.latLngBounds([]);
+
+        if (layerGreenSpaces && map.hasLayer(layerGreenSpaces)) {
+          bounds.extend(layerGreenSpaces.getBounds());
+        }
+
+        if (layerAirPollution && map.hasLayer(layerAirPollution)) {
+          bounds.extend(layerAirPollution.getBounds());
+        }
+
+        if (bounds.isValid()) {
+          map.fitBounds(bounds);
+        } else {
+          alert("No layers loaded to center the view.");
+        }
+      }).addTo(map);
+
+      // Button for adding green spaces
+      L.easyButton("fa-plus", function () {
+        if (drawHandler) {
+          // Disactivating
+          drawHandler.disable();
+          alert("Drawing mode CANCELED.");
+        } else {
+          // Activating
+          alert("Draw mode ON. Draw the polygon. Click the icon again or press 'Esc' to cancel.");
+          drawHandler = new L.Draw.Polygon(map);
+          drawHandler.enable();
+        }
+      }).addTo(map);
+
+      // Button to delete green spaces
+      deleteButton = L.easyButton("fa-trash", function () {
+        toggleDeleteMode(this);
+      }).addTo(map);
+
+      // Event for create space
+      map.on(L.Draw.Event.CREATED, function (e) {
+        var layer = e.layer;
+
+        // Ask for the name of the new area
+        var nome = prompt("Enter the name of the new green area:");
+
+        if (nome && nome.trim() !== "") {
+          var geojsonData = layer.toGeoJSON();
+          geojsonData.properties.NOME = nome;
+
+          // Send data with AJAX call
+          $.ajax({
+            url: "https://geo-backend-bg2p.onrender.com/api/add_area.php",
+            type: "POST",
+            data: {
+              geojson: JSON.stringify(geojsonData),
+            },
+            success: function (response) {
+              alert("New green area successfully added!");
+              loadData();
+            },
+            error: function (xhr, status, error) {
+              alert("Error adding area.\n" + error);
+              console.error("Error details:", xhr.responseText);
+            },
+          });
+        } else {
+          alert("Addition cancelled (name not entered).");
+        }
+      });
+
+      // Turn off mode adding
+      map.on("draw:drawstop", function (e) {
+        if (drawHandler) {
+          drawHandler = null;
+        }
+      });
+    </script>
+  </body>
+</html>
+
