@@ -5,29 +5,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Greener Cities, Cleaner Air</title>
 
-    <link
-      rel="stylesheet"
-      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
-      crossorigin=""
-    />
-
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet-easybutton@2.4.0/src/easy-button.css" />
-
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" />
-
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
 
-    <script
-      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
-      crossorigin=""
-    ></script>
-
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+    <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
     <script src="src/jquery-3.7.1.min.js"></script>
-
     <script src="https://cdn.jsdelivr.net/npm/leaflet-easybutton@2.4.0/src/easy-button.js"></script>
-
     <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
 
     <style>
@@ -35,18 +24,15 @@
         height: 100vh;
         width: 100%;
       }
-
       .legend {
         padding: 6px 8px;
-        font: 14px Arial, Helvetica, sans-serif;
-        background: white;
+        font: 14px Arial;
         background: rgba(255, 255, 255, 0.9);
         box-shadow: 0 0 15px rgba(0, 0, 0, 0.2);
         border-radius: 5px;
         line-height: 1.8;
         color: #555;
       }
-
       .legend i {
         width: 18px;
         height: 18px;
@@ -54,296 +40,387 @@
         margin-right: 8px;
         opacity: 0.9;
       }
-
       .legend strong {
         font-size: 1.1em;
         display: block;
         margin-bottom: 5px;
       }
-
       .active-delete-mode {
         color: white;
       }
     </style>
   </head>
-
   <body>
     <div id="map"></div>
 
     <script>
       var map = L.map("map").setView([38.72, -9.14], 12);
 
-      // Base map
       L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
         attribution: "&copy; OpenStreetMap contributors",
         maxZoom: 19,
       }).addTo(map);
 
-      // Global layers
-      var layerGreenSpaces, layerAirPollution;
-      // Control layer
+      var layerGreenSpaces = L.featureGroup().addTo(map);
+      var layerPM25 = L.featureGroup();
+      var layerO3 = L.featureGroup();
+      var layerNO2 = L.featureGroup();
+      var layerHeatmap = L.featureGroup();
       var layerControl;
-
-      // Variables for delete mode
+      var pollutantControl = L.control({ position: "bottomright" });
+      var legend = L.control({ position: "bottomleft" });
+      var selectedPollutant = "pm2_5";
+      var airPollutionData = null;
+      var greenSpacesData = null;
       var deleteMode = false;
       var deleteButton;
-
+      var drawHandler = null;
       var isInitialLoad = true;
 
-      // To draw new areas
-      var drawHandler = null;
-
-      // Some style functions
-
       function styleGreenSpaces(feature) {
-        return {
-          fillColor: "#6aa84f",
-          weight: 2,
-          opacity: 1,
-          color: "green",
-          fillOpacity: 0.5,
-        };
+        return { fillColor: "#6aa84f", weight: 2, opacity: 1, color: "green", fillOpacity: 0.5 };
       }
 
-      function getColorAirPollution(pm2_5) {
-        let val = parseFloat(pm2_5);
-        if (val > 2.8) return "#7E0023";
-        if (val > 2.4) return "#FF0000";
-        if (val > 2) return "#FF7E00";
-        if (val > 1.6) return "#FFFF00";
-        if (val > 1.2) return "#ADFF2F";
-        return "#00E400";
-      }
-
-      // Pollution legend
-      var legend = L.control({ position: "bottomright" });
-
-      legend.onAdd = function (map) {
-        var div = L.DomUtil.create("div", "info legend"),
-          // Pollution ranges
-          grades = [0, 1.2, 1.6, 2, 2.4, 2.8],
-          labels = [];
-
-        div.innerHTML = "<strong>Pollution (pm2.5)</strong>";
-
-        // Generating labels for legend
-        for (var i = 0; i < grades.length; i++) {
-          var from = grades[i];
-          var to = grades[i + 1];
-          var color = getColorAirPollution(from + 0.01);
-
-          div.innerHTML += '<i style="background:' + color + '"></i> ' + from + (to ? "&ndash;" + to : "+");
-          div.innerHTML += "<br>";
+      function getColorPollutant(type, value) {
+        let v = parseFloat(value);
+        if (type === "pm2_5") {
+          if (v > 2.8) return "#7E0023";
+          if (v > 2.4) return "#FF0000";
+          if (v > 2) return "#FF7E00";
+          if (v > 1.6) return "#FFFF00";
+          if (v > 1.2) return "#ADFF2F";
+          return "#00E400";
         }
+        if (type === "o3") {
+          if (v > 180) return "#7E0023";
+          if (v > 120) return "#FF0000";
+          if (v > 80) return "#FF7E00";
+          if (v > 60) return "#FFFF00";
+          return "#00E400";
+        }
+        if (type === "no2") {
+          if (v > 200) return "#7E0023";
+          if (v > 150) return "#FF0000";
+          if (v > 100) return "#FF7E00";
+          if (v > 50) return "#FFFF00";
+          return "#00E400";
+        }
+        return "#000000";
+      }
 
+      // Dynamic legend
+      function updateLegend(pollutant) {
+        if (legend) legend.remove();
+        legend.onAdd = function () {
+          var div = L.DomUtil.create("div", "info legend");
+          var grades, title;
+          switch (pollutant) {
+            case "pm2_5":
+              grades = [0, 1.2, 1.6, 2, 2.4, 2.8];
+              title = "Pollution (PM2.5 µg/m³)";
+              break;
+            case "o3":
+              grades = [0, 60, 80, 120, 180, 200];
+              title = "Pollution (O₃ µg/m³)";
+              break;
+            case "no2":
+              grades = [0, 50, 100, 150, 200, 250];
+              title = "Pollution (NO₂ µg/m³)";
+              break;
+            default:
+              grades = [0, 1, 2, 3, 4, 5];
+              title = "Pollution";
+          }
+          div.innerHTML = "<strong>" + title + "</strong><br>";
+          for (let i = 0; i < grades.length; i++) {
+            let from = grades[i],
+              to = grades[i + 1];
+            let color = getColorPollutant(pollutant, from + 0.01);
+            div.innerHTML += '<i style="background:' + color + '"></i> ' + from + (to ? "&ndash;" + to : "+") + "<br>";
+          }
+          return div;
+        };
+        legend.addTo(map);
+      }
+
+      // Pollutant dropdown
+      pollutantControl.onAdd = function () {
+        var div = L.DomUtil.create("div", "leaflet-bar leaflet-control");
+        L.DomEvent.disableClickPropagation(div);
+        var select = L.DomUtil.create("select", "", div);
+        ["pm2_5", "o3", "no2"].forEach(function (p) {
+          var opt = document.createElement("option");
+          opt.value = p;
+          opt.text = p.toUpperCase();
+          select.appendChild(opt);
+        });
+        select.onchange = function () {
+          selectedPollutant = this.value;
+          showPollutant(selectedPollutant);
+          updateLegend(selectedPollutant);
+        };
+        updateLegend(selectedPollutant);
         return div;
       };
+      pollutantControl.addTo(map);
 
-      legend.addTo(map);
-
-      // Function to disactivate the delete mode
       function toggleDeleteMode(button) {
         deleteMode = !deleteMode;
         if (deleteMode) {
           $(button.getContainer()).addClass("active-delete-mode");
           map.getContainer().style.cursor = "crosshair";
-          alert("Delete mode is ON. Click a green area to delete it. Click the icon again or press 'Esc' to cancel.");
+          alert("Delete mode ON. Click a green area to delete.");
         } else {
           $(button.getContainer()).removeClass("active-delete-mode");
           map.getContainer().style.cursor = "";
         }
       }
 
-      // Loading data function (manages also the visibility of the layers)
       function loadData() {
-        $.getJSON("https://geo-backend-bg2p.onrender.com/api/get_data.php")
+        $.getJSON("get_data.php")
           .done(function (data) {
-            console.log("Data received:", data);
-
-            // Removing existing layers
-            if (layerGreenSpaces) map.removeLayer(layerGreenSpaces);
-            if (layerAirPollution) map.removeLayer(layerAirPollution);
-
-            // Removing control layer
-            if (layerControl) {
-              layerControl.remove();
-            }
-
-            // Green spaces data
-            layerGreenSpaces = L.geoJSON(data.green_spaces, {
-              style: styleGreenSpaces,
-              onEachFeature: function (feature, layer) {
-                layer.bindPopup("Area: " + (feature.properties.NOME || "N/A"));
-              },
-            });
-
-            // removing green areas
-            layerGreenSpaces.on("click", function (e) {
-              if (deleteMode) {
-                var layer = e.layer;
-                var nome = layer.feature.properties.NOME || "N/A";
-                var uniqueId = layer.feature.properties.id;
-
-                if (!uniqueId) {
-                  alert("Unable to delete: Unique ID ('id') not found in feature properties.");
-                  return;
-                }
-
-                if (confirm("Are you sure you want to delete the area: " + nome + " (ID: " + uniqueId + ")?")) {
-                  // AJAX call to delete the green space
-                  $.post("https://geo-backend-bg2p.onrender.com/api/delete_area.php", { id: uniqueId })
-                    .done(function (response) {
-                      alert("Area eliminated sucessfully!");
-                      loadData();
-                      // Turning off the delete mode
-                      if (deleteMode) {
-                        toggleDeleteMode(deleteButton);
-                      }
-                    })
-                    .fail(function () {
-                      alert("Error deleting area.");
-                    });
-                }
-              }
-            });
-
-            // Pollution data
-            layerAirPollution = L.geoJSON(data.air_pollution, {
-              pointToLayer: function (feature, latlng) {
-                var pm2_5_val = feature.properties.pm2_5;
-                var color = getColorAirPollution(pm2_5_val);
-
-                // Circle marker
-                return L.circleMarker(latlng, {
-                  radius: 10,
-                  fillColor: color,
-                  color: "#333",
-                  weight: 2,
-                  opacity: 1,
-                  fillOpacity: 0.8,
-                });
-              },
-
-              onEachFeature: function (feature, layer) {
-                layer.bindPopup("pm2.5: " + (feature.properties.pm2_5 || "N/A"));
-              },
-            });
-
-            // Adding control layer
-            var overlays = {
-              "Green Spaces": layerGreenSpaces,
-              "Air Pollution": layerAirPollution,
-            };
-            layerControl = L.control.layers(null, overlays).addTo(map);
-
-            layerGreenSpaces.addTo(map);
-            layerAirPollution.addTo(map);
-
-            // Centration only at the first loading
+            airPollutionData = data.air_pollution;
+            greenSpacesData = data.green_spaces;
+            updateGreenSpacesLayer(0);
+            showPollutant(selectedPollutant);
+            updateLegend(selectedPollutant);
+            if (layerControl) layerControl.remove();
+            layerControl = L.control
+              .layers(null, {
+                "Green Spaces": layerGreenSpaces,
+                "Air Pollutant": layerPM25,
+                Heatmap: layerHeatmap,
+              })
+              .addTo(map);
             if (isInitialLoad) {
               var bounds = L.latLngBounds([]);
-
-              // only if it has data
-              if (layerGreenSpaces.getLayers().length > 0) {
-                bounds.extend(layerGreenSpaces.getBounds());
-              }
-              if (layerAirPollution.getLayers().length > 0) {
-                bounds.extend(layerAirPollution.getBounds());
-              }
-
-              if (bounds.isValid()) {
-                map.fitBounds(bounds);
-              }
-
+              if (layerGreenSpaces.getLayers().length) bounds.extend(layerGreenSpaces.getBounds());
+              if (layerPM25.getLayers().length) bounds.extend(layerPM25.getBounds());
+              if (bounds.isValid()) map.fitBounds(bounds);
               isInitialLoad = false;
             }
           })
-          .fail(function () {
-            console.log("Error loading data!");
-          });
+          .fail(() => console.log("Error loading data!"));
+      }
+
+      function showPollutant(type, data = airPollutionData) {
+        selectedPollutant = type;
+        map.removeLayer(layerPM25);
+        map.removeLayer(layerO3);
+        map.removeLayer(layerNO2);
+        let layerToShow = type === "pm2_5" ? layerPM25 : type === "o3" ? layerO3 : layerNO2;
+        layerToShow.clearLayers();
+        let clusterGroup = L.markerClusterGroup({ disableClusteringAtZoom: 12 });
+        let tempLayer = L.featureGroup();
+        L.geoJSON(data, {
+          pointToLayer: (f, latlng) =>
+            L.circleMarker(latlng, {
+              radius: 10,
+              fillColor: getColorPollutant(type, f.properties[type]),
+              color: "#333",
+              weight: 2,
+              opacity: 1,
+              fillOpacity: 0.8,
+            }),
+          onEachFeature: (f, l) => l.bindPopup(type.toUpperCase() + ": " + (f.properties[type] || "N/A")),
+        }).eachLayer((l) => tempLayer.addLayer(l));
+        clusterGroup.addLayer(tempLayer);
+        layerToShow.addLayer(clusterGroup);
+        map.addLayer(layerToShow);
+        updateLegend(type); // update legend whenever pollutant layer is shown
+      }
+
+      function updateGreenSpacesLayer(thresh) {
+        layerGreenSpaces.clearLayers();
+        L.geoJSON(greenSpacesData, {
+          filter: (f) => thresh <= 0 || parseFloat(f.properties.area * 1e6) > thresh,
+          style: styleGreenSpaces,
+          onEachFeature: function (feature, layer) {
+            layer.bindPopup(
+              "Name: " +
+                (feature.properties.NOME || "N/A") +
+                "<br>Area: " +
+                (feature.properties.area * 1e6 || "N/A") +
+                " km²"
+            );
+            layer.on("click", function () {
+              if (!deleteMode) return;
+              var id = feature.properties.id;
+              if (!id) {
+                alert("ID not found.");
+                return;
+              }
+              if (confirm("Delete area: " + (feature.properties.NOME || "N/A") + " (ID: " + id + ")?")) {
+                $.post("delete_area.php", { id: id })
+                  .done(() => {
+                    alert("Area deleted!");
+                    loadData();
+                    if (deleteMode) toggleDeleteMode(deleteButton);
+                  })
+                  .fail(() => {
+                    alert("Error deleting area.");
+                  });
+              }
+            });
+          },
+        }).addTo(layerGreenSpaces);
+      }
+
+      function generateHeatmap() {
+        if (!airPollutionData) return;
+        layerHeatmap.clearLayers();
+
+        map.getContainer().style.cursor = "wait";
+        map.dragging.disable();
+        map.scrollWheelZoom.disable();
+        map.doubleClickZoom.disable();
+        map.boxZoom.disable();
+        map.keyboard.disable();
+
+        var points = turf.featureCollection(
+          airPollutionData.features.map((f) =>
+            turf.point(f.geometry.coordinates, { value: parseFloat(f.properties[selectedPollutant]) })
+          )
+        );
+        var bbox = turf.bbox(points);
+        var grid = turf.squareGrid(bbox, 1, { units: "kilometers" });
+        turf.collect(grid, points, "value", "values");
+        grid.features.forEach((cell) => {
+          let arr = cell.properties.values;
+          cell.properties.avg = arr && arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
+        });
+
+        L.geoJSON(grid, {
+          style: (f) => ({
+            fillColor: getColorPollutant(selectedPollutant, f.properties.avg),
+            weight: 0,
+            fillOpacity: f.properties.avg === 0 ? 0 : 0.6,
+          }),
+          onEachFeature: (f, l) =>
+            l.bindPopup("Heat value (avg " + selectedPollutant + "): " + f.properties.avg.toFixed(2)),
+        }).addTo(layerHeatmap);
+        map.addLayer(layerHeatmap);
+
+        map.getContainer().style.cursor = "";
+        map.dragging.enable();
+        map.scrollWheelZoom.enable();
+        map.doubleClickZoom.enable();
+        map.boxZoom.enable();
+        map.keyboard.enable();
+
+        updateLegend(selectedPollutant); // update legend after heatmap
       }
 
       loadData();
-      // Update data every minute
+      showPollutant(selectedPollutant);
       setInterval(loadData, 60000);
 
-      // Full Extent Button
-      L.easyButton("fa-solid fa-arrows-up-down-left-right", function () {
-        var bounds = L.latLngBounds([]);
-
-        if (layerGreenSpaces && map.hasLayer(layerGreenSpaces)) {
-          bounds.extend(layerGreenSpaces.getBounds());
-        }
-
-        if (layerAirPollution && map.hasLayer(layerAirPollution)) {
-          bounds.extend(layerAirPollution.getBounds());
-        }
-
-        if (bounds.isValid()) {
-          map.fitBounds(bounds);
-        } else {
-          alert("No layers loaded to center the view.");
-        }
-      }).addTo(map);
-
-      // Button for adding green spaces
+      // EasyButtons
       L.easyButton("fa-plus", function () {
         if (drawHandler) {
-          // Disactivating
           drawHandler.disable();
-          alert("Drawing mode CANCELED.");
+          drawHandler = null;
+          alert("Draw mode CANCELED.");
         } else {
-          // Activating
-          alert("Draw mode ON. Draw the polygon. Click the icon again or press 'Esc' to cancel.");
+          alert("Draw mode ON.");
           drawHandler = new L.Draw.Polygon(map);
           drawHandler.enable();
         }
       }).addTo(map);
 
-      // Button to delete green spaces
       deleteButton = L.easyButton("fa-trash", function () {
         toggleDeleteMode(this);
       }).addTo(map);
 
-      // Event for create space
+      L.easyButton("fa-solid fa-arrows-up-down-left-right", function () {
+        var bounds = L.latLngBounds([]);
+        if (layerGreenSpaces && map.hasLayer(layerGreenSpaces)) bounds.extend(layerGreenSpaces.getBounds());
+        if (layerPM25 && map.hasLayer(layerPM25)) bounds.extend(layerPM25.getBounds());
+        if (bounds.isValid()) map.fitBounds(bounds);
+        else alert("No layers loaded.");
+      }).addTo(map);
+
+      L.easyButton("fa-fire", function () {
+        generateHeatmap();
+      }).addTo(map);
+
       map.on(L.Draw.Event.CREATED, function (e) {
         var layer = e.layer;
-
-        // Ask for the name of the new area
-        var nome = prompt("Enter the name of the new green area:");
-
+        var nome = prompt("Enter name of new green area:");
         if (nome && nome.trim() !== "") {
-          var geojsonData = layer.toGeoJSON();
-          geojsonData.properties.NOME = nome;
-
-          // Send data with AJAX call
+          var geojson = layer.toGeoJSON();
+          geojson.properties.NOME = nome;
           $.ajax({
-            url: "https://geo-backend-bg2p.onrender.com/api/add_area.php",
+            url: "add_area.php",
             type: "POST",
-            data: {
-              geojson: JSON.stringify(geojsonData),
-            },
-            success: function (response) {
-              alert("New green area successfully added!");
+            data: { geojson: JSON.stringify(geojson) },
+            success: function () {
+              alert("New green area added!");
               loadData();
             },
             error: function (xhr, status, error) {
               alert("Error adding area.\n" + error);
-              console.error("Error details:", xhr.responseText);
+              console.error(xhr.responseText);
             },
           });
-        } else {
-          alert("Addition cancelled (name not entered).");
-        }
+        } else alert("Addition cancelled.");
       });
 
-      // Turn off mode adding
-      map.on("draw:drawstop", function (e) {
-        if (drawHandler) {
-          drawHandler = null;
-        }
+      map.on("draw:drawstop", function () {
+        drawHandler = null;
       });
+
+      // Filter control
+      var filterControl = L.control({ position: "topright" });
+      filterControl.onAdd = function (map) {
+        var div = L.DomUtil.create("div", "leaflet-bar leaflet-control");
+        L.DomEvent.disableClickPropagation(div);
+
+        var filterBtn = L.DomUtil.create("a", "fa fa-filter", div);
+        filterBtn.href = "#";
+        filterBtn.title = "Filter Air Pollution";
+        L.DomEvent.on(filterBtn, "click", function (e) {
+          L.DomEvent.stopPropagation(e);
+          L.DomEvent.preventDefault(e);
+          var t = prompt("Enter threshold for " + selectedPollutant + " (leave 0 to reset)", "0");
+          if (t !== null) {
+            let threshold = parseFloat(t) || 0;
+            let filtered = {
+              type: "FeatureCollection",
+              features: airPollutionData.features.filter(
+                (f) => threshold <= 0 || parseFloat(f.properties[selectedPollutant]) > threshold
+              ),
+            };
+            showPollutant(selectedPollutant, filtered);
+            updateLegend(selectedPollutant); // update legend after filter
+          }
+        });
+
+        var greenBtn = L.DomUtil.create("a", "fa fa-vector-square", div);
+        greenBtn.href = "#";
+        greenBtn.title = "Filter Green Areas";
+        L.DomEvent.on(greenBtn, "click", function (e) {
+          L.DomEvent.stopPropagation(e);
+          L.DomEvent.preventDefault(e);
+          var t = prompt("Enter min green area (km²). Leave 0 to reset", "0");
+          if (t !== null) updateGreenSpacesLayer(parseFloat(t) || 0);
+        });
+
+        var clearBtn = L.DomUtil.create("a", "fa fa-eraser", div);
+        clearBtn.href = "#";
+        clearBtn.title = "Clear Filters";
+        L.DomEvent.on(clearBtn, "click", function (e) {
+          L.DomEvent.stopPropagation(e);
+          L.DomEvent.preventDefault(e);
+          showPollutant(selectedPollutant);
+          updateGreenSpacesLayer(0);
+          updateLegend(selectedPollutant); // update legend after clearing filters
+          alert("All filters cleared!");
+        });
+
+        return div;
+      };
+      filterControl.addTo(map);
     </script>
   </body>
 </html>
-
