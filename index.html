@@ -420,7 +420,6 @@
               ),
             };
             showPollutant(selectedPollutant, filtered);
-            updateLegend(selectedPollutant); // update legend after filtering
           }
         });
 
@@ -444,7 +443,6 @@
           L.DomEvent.preventDefault(e);
           showPollutant(selectedPollutant);
           updateGreenSpacesLayer(0);
-          updateLegend(selectedPollutant);
           alert("All filters cleared!");
         });
 
@@ -480,4 +478,5 @@
     </script>
   </body>
 </html>
+
 
